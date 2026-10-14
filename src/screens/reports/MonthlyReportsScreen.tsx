@@ -7,6 +7,7 @@ import {
   StyleSheet,
   ActivityIndicator,
   Alert,
+  BackHandler,
 } from 'react-native';
 import { colors, typography, radii, spacing, shadows, useTheme, Theme } from '../../theme';
 import { Ionicons } from '@expo/vector-icons';
@@ -22,6 +23,32 @@ import { expenseService } from '../../services/expenseService';
 import { exportService } from '../../services/exportService';
 import { Bill, ExpenseRecord } from '../../types/models';
 import { formatRupee } from '../../lib/money';
+
+const MONTH_NAMES = [
+  'January', 'February', 'March', 'April', 'May', 'June',
+  'July', 'August', 'September', 'October', 'November', 'December',
+];
+
+const MONTH_NAMES_SHORT = [
+  'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+  'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
+];
+
+interface MonthSummary {
+  monthIndex: number;
+  monthName: string;
+  monthShort: string;
+  bills: Bill[];
+  totalAmount: number;
+  count: number;
+}
+
+interface YearSummary {
+  year: number;
+  totalAmount: number;
+  count: number;
+  months: MonthSummary[];
+}
 
 interface MonthlyReportsScreenProps {
   onBackToHome: () => void;
@@ -41,11 +68,17 @@ export const MonthlyReportsScreen: React.FC<MonthlyReportsScreenProps> = ({
   const [isPreviewModalVisible, setIsPreviewModalVisible] = useState(false);
 
   const now = new Date();
+  const [mainTab, setMainTab] = useState<'Report' | 'Summary'>('Report');
   const [repMonth, setRepMonth] = useState(now.getMonth());
   const [repYear, setRepYear] = useState(now.getFullYear());
   const [activeTab, setActiveTab] = useState<'Summary' | 'Day-wise'>('Summary');
   const [bills, setBills] = useState<Bill[]>([]);
   const [expenses, setExpenses] = useState<ExpenseRecord[]>([]);
+
+  // Summary hierarchical drill-down state
+  const [summaryLevel, setSummaryLevel] = useState<1 | 2 | 3>(3);
+  const [summaryYear, setSummaryYear] = useState<number>(now.getFullYear());
+  const [summaryMonth, setSummaryMonth] = useState<number>(now.getMonth());
 
   useEffect(() => {
     loadData();
@@ -162,17 +195,389 @@ export const MonthlyReportsScreen: React.FC<MonthlyReportsScreenProps> = ({
     }
   };
 
+  // Group bills by year and month
+  const summaryHierarchy = useMemo<YearSummary[]>(() => {
+    const yearMap = new Map<number, Map<number, Bill[]>>();
+
+    for (const bill of bills) {
+      if (!bill.createdAt) continue;
+      const d = new Date(bill.createdAt);
+      if (isNaN(d.getTime())) continue;
+      const y = d.getFullYear();
+      const m = d.getMonth();
+
+      if (!yearMap.has(y)) {
+        yearMap.set(y, new Map<number, Bill[]>());
+      }
+      const mObj = yearMap.get(y)!;
+      if (!mObj.has(m)) {
+        mObj.set(m, []);
+      }
+      mObj.get(m)!.push(bill);
+    }
+
+    const yearsResult: YearSummary[] = [];
+    const sortedYears = Array.from(yearMap.keys()).sort((a, b) => b - a);
+
+    for (const y of sortedYears) {
+      const mObj = yearMap.get(y)!;
+      const sortedMonths = Array.from(mObj.keys()).sort((a, b) => b - a);
+      const monthsResult: MonthSummary[] = [];
+      let yearTotal = 0;
+      let yearCount = 0;
+
+      for (const m of sortedMonths) {
+        const monthBills = mObj.get(m)!.sort(
+          (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+        );
+        const monthTotal = monthBills.reduce((acc, b) => acc + (Number(b.totalAmount) || 0), 0);
+        const count = monthBills.length;
+        yearTotal += monthTotal;
+        yearCount += count;
+
+        monthsResult.push({
+          monthIndex: m,
+          monthName: MONTH_NAMES[m],
+          monthShort: MONTH_NAMES_SHORT[m],
+          bills: monthBills,
+          totalAmount: monthTotal,
+          count,
+        });
+      }
+
+      yearsResult.push({
+        year: y,
+        totalAmount: yearTotal,
+        count: yearCount,
+        months: monthsResult,
+      });
+    }
+
+    return yearsResult;
+  }, [bills]);
+
+  // Keep selected year/month in sync with available hierarchy
+  useEffect(() => {
+    if (summaryHierarchy.length > 0) {
+      const currentYearObj = summaryHierarchy.find(y => y.year === summaryYear);
+      if (!currentYearObj) {
+        setSummaryYear(summaryHierarchy[0].year);
+        if (summaryHierarchy[0].months.length > 0) {
+          setSummaryMonth(summaryHierarchy[0].months[0].monthIndex);
+        }
+      } else {
+        const hasMonth = currentYearObj.months.some(m => m.monthIndex === summaryMonth);
+        if (!hasMonth && currentYearObj.months.length > 0) {
+          setSummaryMonth(currentYearObj.months[0].monthIndex);
+        }
+      }
+    }
+  }, [summaryHierarchy]);
+
+  // Back button behavior: system back goes up one level in Summary (3 -> 2 -> 1) and only then leaves
+  useEffect(() => {
+    const onBackPress = () => {
+      if (mainTab === 'Summary' && summaryLevel > 1) {
+        setSummaryLevel(prev => (prev === 3 ? 2 : 1));
+        return true;
+      }
+      return false;
+    };
+    const sub = BackHandler.addEventListener('hardwareBackPress', onBackPress);
+    return () => sub.remove();
+  }, [mainTab, summaryLevel]);
+
+  const handleHeaderBack = () => {
+    if (mainTab === 'Summary' && summaryLevel > 1) {
+      setSummaryLevel(prev => (prev === 3 ? 2 : 1));
+    } else {
+      onBackToHome();
+    }
+  };
+
+  const currentYearData = summaryHierarchy.find(y => y.year === summaryYear);
+  const currentMonthData = currentYearData?.months.find(m => m.monthIndex === summaryMonth);
+  const currentMonthBills = currentMonthData?.bills || [];
+  const currentMonthTotal = currentMonthData?.totalAmount || 0;
+
+  const formatBillCount = (count: number) => `${count} ${count === 1 ? 'bill' : 'bills'}`;
+
+  const formatBillDate = (dateStr: string) => {
+    const d = new Date(dateStr);
+    if (isNaN(d.getTime())) return '—';
+    const mShort = MONTH_NAMES_SHORT[d.getMonth()] || '';
+    return `${mShort} ${d.getDate()}`;
+  };
+
+  const handleExportPdfForMonth = async (year: number, month: number) => {
+    if (isQuotaExceeded) {
+      Alert.alert(
+        'Quota Reached (100 Bills)',
+        'You have reached the free tier limit of 100 bills. Upgrade to Pro to export PDF and Excel reports.',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          { text: 'Upgrade to Pro', onPress: onNavigateToUpgrade },
+        ]
+      );
+      return;
+    }
+    setIsExportingPdf(true);
+    try {
+      const mReport = reportService.getMonthlyReport(year, month, bills, expenses);
+      const res = await exportService.exportMonthlyReportPdf(mReport, shop);
+      if (res.success) {
+        flash(`${mReport.monthShort} PDF generated`);
+      } else {
+        flash(res.error || 'Failed to generate PDF');
+      }
+    } catch {
+      flash('Error generating PDF');
+    } finally {
+      setIsExportingPdf(false);
+    }
+  };
+
+  const handleExportExcelForMonth = async (year: number, month: number) => {
+    if (isQuotaExceeded) {
+      Alert.alert(
+        'Quota Reached (100 Bills)',
+        'You have reached the free tier limit of 100 bills. Upgrade to Pro to export PDF and Excel reports.',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          { text: 'Upgrade to Pro', onPress: onNavigateToUpgrade },
+        ]
+      );
+      return;
+    }
+    setIsExportingExcel(true);
+    try {
+      const mReport = reportService.getMonthlyReport(year, month, bills, expenses);
+      const res = await exportService.exportMonthlyReportExcel(mReport, shop);
+      if (res.success) {
+        flash(`${mReport.monthShort} Excel report saved`);
+      } else {
+        flash(res.error || 'Failed to generate Excel report');
+      }
+    } catch {
+      flash('Error exporting Excel');
+    } finally {
+      setIsExportingExcel(false);
+    }
+  };
+
   return (
     <View style={styles.container}>
       <ScrollView contentContainerStyle={styles.scrollContent}>
         {/* Header */}
         <View style={styles.header}>
-          <TouchableOpacity onPress={onBackToHome} style={styles.backBtn} activeOpacity={0.7}>
+          <TouchableOpacity onPress={handleHeaderBack} style={styles.backBtn} activeOpacity={0.7}>
             <Ionicons name="arrow-back" size={20} color={colors.text} />
           </TouchableOpacity>
           <Text style={styles.title}>Monthly reports</Text>
         </View>
 
+        {/* Top Segmented Tabs: Report vs Summary */}
+        <SegmentedControl
+          options={['Report', 'Summary']}
+          selected={mainTab}
+          onSelect={setMainTab}
+        />
+
+        {mainTab === 'Summary' ? (
+          /* SUMMARY TAB: Hierarchical Drill-down (Level 1 -> 2 -> 3) */
+          <View style={styles.summaryTabContainer}>
+            <Text style={styles.summarySubtitle}>Sales by year and month</Text>
+
+            {/* Breadcrumb Navigation */}
+            <View style={styles.breadcrumbRow}>
+              {summaryLevel === 1 && (
+                <Text style={styles.breadcrumbActive}>All years</Text>
+              )}
+              {summaryLevel === 2 && (
+                <>
+                  <TouchableOpacity onPress={() => setSummaryLevel(1)} activeOpacity={0.7}>
+                    <Text style={styles.breadcrumbLink}>All years</Text>
+                  </TouchableOpacity>
+                  <Text style={styles.breadcrumbSep}>  ›  </Text>
+                  <Text style={styles.breadcrumbActive}>{summaryYear}</Text>
+                </>
+              )}
+              {summaryLevel === 3 && (
+                <>
+                  <TouchableOpacity onPress={() => setSummaryLevel(1)} activeOpacity={0.7}>
+                    <Text style={styles.breadcrumbLink}>All years</Text>
+                  </TouchableOpacity>
+                  <Text style={styles.breadcrumbSep}>  ›  </Text>
+                  <TouchableOpacity onPress={() => setSummaryLevel(2)} activeOpacity={0.7}>
+                    <Text style={styles.breadcrumbLink}>{summaryYear}</Text>
+                  </TouchableOpacity>
+                  <Text style={styles.breadcrumbSep}>  ›  </Text>
+                  <Text style={styles.breadcrumbActive}>{MONTH_NAMES[summaryMonth]}</Text>
+                </>
+              )}
+            </View>
+
+            {/* Heading Title */}
+            <Text style={styles.summaryTitle}>
+              {summaryLevel === 1 && 'All years'}
+              {summaryLevel === 2 && `${summaryYear}`}
+              {summaryLevel === 3 && `${MONTH_NAMES[summaryMonth]} ${summaryYear}`}
+            </Text>
+
+            {/* LEVEL 1: All years list */}
+            {summaryLevel === 1 && (
+              summaryHierarchy.length === 0 ? (
+                <View style={styles.emptyContainer}>
+                  <Ionicons name="receipt-outline" size={44} color={colors.textMuted} style={styles.emptyIcon} />
+                  <Text style={styles.emptyTitle}>No sales yet</Text>
+                  <Text style={styles.emptySubtitle}>Create a bill and it will appear here.</Text>
+                </View>
+              ) : (
+                <View style={styles.summaryList}>
+                  {summaryHierarchy.map(y => (
+                    <TouchableOpacity
+                      key={y.year}
+                      style={styles.summaryRowCard}
+                      activeOpacity={0.7}
+                      onPress={() => {
+                        setSummaryYear(y.year);
+                        if (y.months.length > 0) {
+                          setSummaryMonth(y.months[0].monthIndex);
+                        }
+                        setSummaryLevel(2);
+                      }}
+                    >
+                      <View style={styles.summaryRowLeft}>
+                        <Text style={styles.summaryRowTitle}>{y.year}</Text>
+                        <Text style={styles.summaryRowCount}>{formatBillCount(y.count)}</Text>
+                      </View>
+                      <View style={styles.summaryRowRight}>
+                        <Text style={styles.summaryRowAmount}>{formatRupee(y.totalAmount)}</Text>
+                        <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
+                      </View>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              )
+            )}
+
+            {/* LEVEL 2: Months of selected year */}
+            {summaryLevel === 2 && (
+              (!currentYearData || currentYearData.months.length === 0) ? (
+                <View style={styles.emptyContainer}>
+                  <Ionicons name="receipt-outline" size={44} color={colors.textMuted} style={styles.emptyIcon} />
+                  <Text style={styles.emptyTitle}>No sales yet</Text>
+                  <Text style={styles.emptySubtitle}>Create a bill and it will appear here.</Text>
+                </View>
+              ) : (
+                <View style={styles.summaryList}>
+                  {currentYearData.months.map(m => (
+                    <TouchableOpacity
+                      key={m.monthIndex}
+                      style={styles.summaryRowCard}
+                      activeOpacity={0.7}
+                      onPress={() => {
+                        setSummaryMonth(m.monthIndex);
+                        setSummaryLevel(3);
+                      }}
+                    >
+                      <View style={styles.summaryRowLeft}>
+                        <Text style={styles.summaryRowTitle}>{m.monthName}</Text>
+                        <Text style={styles.summaryRowCount}>{formatBillCount(m.count)}</Text>
+                      </View>
+                      <View style={styles.summaryRowRight}>
+                        <Text style={styles.summaryRowAmount}>{formatRupee(m.totalAmount)}</Text>
+                        <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
+                      </View>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              )
+            )}
+
+            {/* LEVEL 3: Bills Table for selected month */}
+            {summaryLevel === 3 && (
+              currentMonthBills.length === 0 ? (
+                <View style={styles.emptyContainer}>
+                  <Ionicons name="receipt-outline" size={44} color={colors.textMuted} style={styles.emptyIcon} />
+                  <Text style={styles.emptyTitle}>No sales yet</Text>
+                  <Text style={styles.emptySubtitle}>Create a bill and it will appear here.</Text>
+                </View>
+              ) : (
+                <>
+                  <View style={styles.monthTableCard}>
+                    {/* Header */}
+                    <View style={styles.monthTableHead}>
+                      <Text style={[styles.mThCell, styles.mColDate]}>Date</Text>
+                      <Text style={[styles.mThCell, styles.mColName]}>Name</Text>
+                      <Text style={[styles.mThCell, styles.mColItems]}>Items</Text>
+                      <Text style={[styles.mThCell, styles.mColAmount, styles.alignRight]}>Amount</Text>
+                    </View>
+
+                    {/* Bill Rows */}
+                    {currentMonthBills.map(bill => {
+                      const displayName = bill.customerName?.trim() || bill.customerPhone?.trim() || '—';
+                      const displayItems = bill.items && bill.items.length > 0
+                        ? bill.items.map(i => i.itemName).filter(Boolean).join(', ')
+                        : '—';
+                      return (
+                        <View key={bill.id} style={styles.monthTableRow}>
+                          <Text style={[styles.mTdCell, styles.mColDate]} numberOfLines={1}>
+                            {formatBillDate(bill.createdAt)}
+                          </Text>
+                          <Text style={[styles.mTdCellBold, styles.mColName]} numberOfLines={1} ellipsizeMode="tail">
+                            {displayName}
+                          </Text>
+                          <Text style={[styles.mTdCellMuted, styles.mColItems]} numberOfLines={1} ellipsizeMode="tail">
+                            {displayItems}
+                          </Text>
+                          <Text style={[styles.mTdCellAmount, styles.mColAmount, styles.alignRight]} numberOfLines={1}>
+                            {formatRupee(bill.totalAmount)}
+                          </Text>
+                        </View>
+                      );
+                    })}
+
+                    {/* Month Total Footer */}
+                    <View style={styles.monthTableFoot}>
+                      <Text style={styles.monthTotalText}>Month total</Text>
+                      <Text style={styles.monthTotalAmt}>{formatRupee(currentMonthTotal)}</Text>
+                    </View>
+                  </View>
+
+                  {/* Side-by-Side Export Action Buttons */}
+                  <View style={styles.summaryExportRow}>
+                    <TouchableOpacity
+                      style={styles.summaryExportBtn}
+                      activeOpacity={0.8}
+                      onPress={() => handleExportExcelForMonth(summaryYear, summaryMonth)}
+                      disabled={isExportingExcel}
+                    >
+                      <View style={styles.excelIconBadge}>
+                        <Ionicons name="stats-chart" size={16} color="#16A34A" />
+                      </View>
+                      <Text style={styles.summaryExportBtnText}>Excel</Text>
+                    </TouchableOpacity>
+
+                    <TouchableOpacity
+                      style={styles.summaryExportBtn}
+                      activeOpacity={0.8}
+                      onPress={() => handleExportPdfForMonth(summaryYear, summaryMonth)}
+                      disabled={isExportingPdf}
+                    >
+                      <View style={styles.pdfIconBadge}>
+                        <Ionicons name="document-text" size={16} color="#DC2626" />
+                      </View>
+                      <Text style={styles.summaryExportBtnText}>PDF</Text>
+                    </TouchableOpacity>
+                  </View>
+                </>
+              )
+            )}
+          </View>
+        ) : (
+          /* REPORT TAB: Overview & Analytics */
+          <>
         {/* Month Selector Card */}
         <View style={styles.monthCard}>
           <View style={styles.monthNavRow}>
@@ -488,6 +893,8 @@ export const MonthlyReportsScreen: React.FC<MonthlyReportsScreenProps> = ({
             style={styles.waExportBtn}
           />
         </View>
+          </>
+        )}
       </ScrollView>
 
       {/* Report Preview Modal */}
@@ -1059,6 +1466,240 @@ const createStyles = (theme: Theme) => {
     },
     disabledActionBtn: {
       opacity: 0.65,
+    },
+    summaryTabContainer: {
+      gap: 12,
+      marginTop: 4,
+    },
+    summarySubtitle: {
+      fontSize: 13,
+      color: colors.textMuted,
+      fontFamily: typography.fonts.body,
+      marginBottom: 2,
+    },
+    breadcrumbRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      flexWrap: 'wrap',
+      marginBottom: 4,
+    },
+    breadcrumbLink: {
+      fontSize: 14,
+      fontFamily: typography.fonts.heading,
+      fontWeight: '700',
+      color: '#FF5F00',
+    },
+    breadcrumbSep: {
+      fontSize: 14,
+      color: colors.textMuted,
+      marginHorizontal: 2,
+    },
+    breadcrumbActive: {
+      fontSize: 14,
+      fontFamily: typography.fonts.heading,
+      fontWeight: '700',
+      color: colors.text,
+    },
+    summaryTitle: {
+      fontSize: 22,
+      fontFamily: typography.fonts.heading,
+      fontWeight: '800',
+      color: colors.text,
+      marginBottom: 8,
+      letterSpacing: -0.3,
+    },
+    summaryList: {
+      gap: 10,
+    },
+    summaryRowCard: {
+      backgroundColor: colors.surface,
+      borderRadius: 16,
+      padding: 16,
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      borderWidth: 1,
+      borderColor: colors.border,
+      ...shadows.card,
+    },
+    summaryRowLeft: {
+      gap: 2,
+    },
+    summaryRowTitle: {
+      fontFamily: typography.fonts.heading,
+      fontSize: 16,
+      fontWeight: '700',
+      color: colors.text,
+    },
+    summaryRowCount: {
+      fontFamily: typography.fonts.body,
+      fontSize: 12.5,
+      color: colors.textMuted,
+    },
+    summaryRowRight: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 8,
+    },
+    summaryRowAmount: {
+      fontFamily: typography.fonts.heading,
+      fontSize: 16,
+      fontWeight: '700',
+      color: colors.text,
+    },
+    monthTableCard: {
+      backgroundColor: colors.surface,
+      borderRadius: 18,
+      padding: 16,
+      borderWidth: 1,
+      borderColor: colors.border,
+      ...shadows.card,
+    },
+    monthTableHead: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      paddingBottom: 10,
+      borderBottomWidth: 1,
+      borderBottomColor: colors.border,
+    },
+    mThCell: {
+      fontFamily: typography.fonts.heading,
+      fontSize: 12,
+      color: colors.textMuted,
+      fontWeight: '600',
+    },
+    mColDate: {
+      width: 48,
+    },
+    mColName: {
+      flex: 1.2,
+      minWidth: 50,
+      paddingRight: 6,
+    },
+    mColItems: {
+      flex: 1.4,
+      minWidth: 60,
+      paddingRight: 6,
+    },
+    mColAmount: {
+      minWidth: 60,
+      flexShrink: 0,
+    },
+    monthTableRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      paddingVertical: 12,
+      borderBottomWidth: 1,
+      borderBottomColor: colors.border,
+    },
+    mTdCell: {
+      fontFamily: typography.fonts.body,
+      fontSize: 12.5,
+      color: colors.text,
+    },
+    mTdCellBold: {
+      fontFamily: typography.fonts.heading,
+      fontSize: 13,
+      fontWeight: '600',
+      color: colors.text,
+    },
+    mTdCellMuted: {
+      fontFamily: typography.fonts.body,
+      fontSize: 12.5,
+      color: colors.textMuted,
+    },
+    mTdCellAmount: {
+      fontFamily: typography.fonts.heading,
+      fontSize: 13.5,
+      fontWeight: '700',
+      color: colors.text,
+    },
+    monthTableFoot: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      paddingTop: 14,
+      marginTop: 2,
+    },
+    monthTotalText: {
+      fontFamily: typography.fonts.heading,
+      fontSize: 15,
+      fontWeight: '800',
+      color: colors.text,
+    },
+    monthTotalAmt: {
+      fontFamily: typography.fonts.heading,
+      fontSize: 17,
+      fontWeight: '800',
+      color: '#FF5F00',
+    },
+    summaryExportRow: {
+      flexDirection: 'row',
+      gap: 12,
+      marginTop: 4,
+    },
+    summaryExportBtn: {
+      flex: 1,
+      height: 50,
+      backgroundColor: colors.surface,
+      borderRadius: 16,
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'center',
+      gap: 10,
+      borderWidth: 1,
+      borderColor: colors.border,
+      ...shadows.card,
+    },
+    excelIconBadge: {
+      width: 28,
+      height: 28,
+      borderRadius: 8,
+      backgroundColor: theme.isDark ? '#064E3B' : '#DCFCE7',
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    pdfIconBadge: {
+      width: 28,
+      height: 28,
+      borderRadius: 8,
+      backgroundColor: theme.isDark ? '#7F1D1D' : '#FEE2E2',
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    summaryExportBtnText: {
+      fontFamily: typography.fonts.heading,
+      fontSize: 14,
+      fontWeight: '700',
+      color: colors.text,
+    },
+    emptyContainer: {
+      backgroundColor: colors.surface,
+      borderRadius: 18,
+      padding: 32,
+      alignItems: 'center',
+      justifyContent: 'center',
+      borderWidth: 1,
+      borderColor: colors.border,
+      ...shadows.card,
+      marginTop: 8,
+    },
+    emptyIcon: {
+      marginBottom: 10,
+      opacity: 0.6,
+    },
+    emptyTitle: {
+      fontFamily: typography.fonts.heading,
+      fontSize: 16,
+      fontWeight: '700',
+      color: colors.text,
+      marginBottom: 4,
+    },
+    emptySubtitle: {
+      fontFamily: typography.fonts.body,
+      fontSize: 13,
+      color: colors.textMuted,
+      textAlign: 'center',
     },
   });
 };
