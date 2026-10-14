@@ -1,0 +1,93 @@
+{
+  "expo": {
+    "name": "Counter365",
+    "slug": "counterpro-android",
+    "scheme": [
+      "counter365",
+      "counterpro"
+    ],
+    "version": "1.0.4",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "assetBundlePatterns": [
+      "**/*"
+    ],
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.tecstellar.counter365",
+      "infoPlist": {
+        "NSCameraUsageDescription": "Counter365 needs camera access to scan menu cards.",
+        "NSPhotoLibraryUsageDescription": "Counter365 needs photo library access to upload your shop logo and scan menu cards.",
+        "NSContactsUsageDescription": "Allow Counter365 to import customer contact details for billing and ledger khata.",
+        "NSLocationWhenInUseUsageDescription": "Counter365 uses your location to automatically tag your shop address and coordinates.",
+        "LSApplicationQueriesSchemes": [
+          "whatsapp",
+          "whatsapp"
+        ],
+        "ITSAppUsesNonExemptEncryption": false
+      }
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundColor": "#101318"
+      },
+      "permissions": [
+        "READ_CONTACTS",
+        "android.permission.READ_CONTACTS",
+        "android.permission.WRITE_CONTACTS"
+      ],
+      "package": "com.counterpro.app",
+      "softwareKeyboardLayoutMode": "pan"
+    },
+    "plugins": [
+      [
+        "expo-font",
+        {
+          "fonts": [
+            "./assets/fonts/Lexend-Regular.ttf",
+            "./assets/fonts/Lexend-Medium.ttf",
+            "./assets/fonts/Lexend-SemiBold.ttf",
+            "./assets/fonts/Lexend-Bold.ttf",
+            "./assets/fonts/Lexend-ExtraBold.ttf",
+            "./assets/fonts/Jost-Medium.ttf",
+            "./assets/fonts/Jost-SemiBold.ttf",
+            "./assets/fonts/Jost-Bold.ttf",
+            "./assets/fonts/Jost-ExtraBold.ttf",
+            "./assets/fonts/NotoSansTamil-Regular.ttf",
+            "./assets/fonts/NotoSansTamil-SemiBold.ttf",
+            "./assets/fonts/NotoSansTamil-Bold.ttf",
+            "./assets/fonts/Archivo-Regular.ttf",
+            "./assets/fonts/Archivo-Medium.ttf",
+            "./assets/fonts/Archivo-SemiBold.ttf",
+            "./assets/fonts/Archivo-Bold.ttf",
+            "./assets/fonts/Archivo-Black.ttf",
+            "./assets/fonts/CaacupeOne-Regular.ttf"
+          ]
+        }
+      ],
+      "expo-sharing",
+      "expo-status-bar",
+      [
+        "expo-contacts",
+        {
+          "contactsPermission": "Allow Counter365 to import customer contact details for billing and ledger khata."
+        }
+      ],
+      "expo-video"
+    ],
+    "updates": {
+      "url": "https://u.expo.dev/3a8aa2b0-0cce-48b2-a9d5-e9fdfb40426c",
+      "checkAutomatically": "NEVER"
+    },
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
+    "extra": {
+      "eas": {
+        "projectId": "3a8aa2b0-0cce-48b2-a9d5-e9fdfb40426c"
+      }
+    }
+  }
+}
